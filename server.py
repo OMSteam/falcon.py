@@ -34,15 +34,15 @@ class ServerDBWrapper(object):
         
     def check_schema(self):
         cursor = self.mydb.cursor()
-        #cursor.execute("DROP TABLE Users")
-        #cursor.execute("DROP TABLE RegTokens")
-        #cursor.execute("DROP TABLE Documents")
+        cursor.execute("DROP TABLE Users")
+        cursor.execute("DROP TABLE RegTokens")
+        cursor.execute("DROP TABLE Documents")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS Users(
             id VARCHAR(64) PRIMARY KEY,
             PK VARCHAR(10000) NOT NULL,
             StockCount INT NOT NULL,
-            RevokeDate DATETIME,
+            RevokeTimestamp INT,
             Challange VARCHAR({}) NOT NULL,
             ChallangeTime INT UNSIGNED NOT NULL
         )""".format(self.CHALLANGE_LENGTH))
@@ -61,6 +61,12 @@ class ServerDBWrapper(object):
     def add_token(self, token, stock_num):
         cursor = self.mydb.cursor()
         cursor.execute("INSERT INTO RegTokens(Token, StockCount) VALUES('{token}', {stock})".format(token=token, stock=stock_num))
+        cursor.close()
+        self.mydb.commit()
+        
+    def revoke_user(self, login):
+        cursor = self.mydb.cursor()
+        cursor.execute("UPDATE Users SET RevokeTimestamp={timestamp} WHERE id='{id}'".format(id=login, timestamp=int(time())))
         cursor.close()
         self.mydb.commit()
         
@@ -87,7 +93,7 @@ class ServerDBWrapper(object):
     def add_user(self, login, PK, stocks):
         cursor = self.mydb.cursor()
         PKbase64 = b64encode(pickle.dumps(PK)).decode('ascii')
-        cursor.execute("INSERT INTO Users(id, PK, StockCount, RevokeDate, Challange, ChallangeTime) VALUES('{id}', '{PK}', {stocks}, NULL, '{challange}', {time})".format(
+        cursor.execute("INSERT INTO Users(id, PK, StockCount, RevokeTimestamp, Challange, ChallangeTime) VALUES('{id}', '{PK}', {stocks}, NULL, '{challange}', {time})".format(
             id=login, 
             PK=PKbase64, 
             stocks=stocks, 
@@ -105,6 +111,13 @@ class ServerDBWrapper(object):
         cursor.close()
         return result[0], result[1], result[2]
         
+    def is_user_revoked(self, id):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT 1 FROM Users WHERE id='{id}' AND RevokeTimestamp IS NOT NULL".format(id=id))
+        result = cursor.fetchall()
+        cursor.close()
+        return len(result) == 1
+        
     def update_challange(self, id):
         cursor = self.mydb.cursor()
         cursor.execute("UPDATE Users SET Challange='{challange}', ChallangeTime={time} WHERE id='{id}'".format(
@@ -116,13 +129,13 @@ class ServerDBWrapper(object):
         self.mydb.commit()
         cursor.close()
         
-    def get_pbulic_keys(self, signers_list):
+    def get_pbulic_keys(self, signers_list, timestamp):
         # prepare query filter
         flt = ' OR '.join(["id='{}'".format(signer) for signer in signers_list])
         print("DEBUG filter: {}".format(flt))
     
         cursor = self.mydb.cursor()
-        cursor.execute("SELECT id, PK FROM Users WHERE ({filter})".format(filter=flt)) 
+        cursor.execute("SELECT id, PK FROM Users WHERE ({filter}) AND (RevokeTimestamp IS NULL OR RevokeTimestamp>{timestamp})".format(filter=flt, timestamp=timestamp)) 
         result = cursor.fetchall()
         cursor.close()
         public_keys = [(e[0], e[1]) for e in result] # list of tuples (id, PK)
@@ -131,9 +144,9 @@ class ServerDBWrapper(object):
             public_keys_map[login] = pickle.loads(b64decode(public_key))
         return public_keys_map
         
-    def get_ordered_signers_list(self):
+    def get_ordered_signers_list(self, timestamp):
         cursor = self.mydb.cursor()
-        cursor.execute("SELECT id FROM Users ORDER BY StockCount") 
+        cursor.execute("SELECT id FROM Users WHERE RevokeTimestamp>{timestamp} OR RevokeTimestamp IS NULL ORDER BY StockCount".format(timestamp=timestamp) )
         result = cursor.fetchall()
         cursor.close()
         return [e[0] for e in result]
@@ -163,6 +176,7 @@ class ServerDBWrapper(object):
         if len(result) == 0:
             raise ValueError("Docuemnt doesn't exist or is already in the library (signed)")
         result = result[0]
+        print(result)
         return pickle.loads(b64decode(result[0]))[result[1]]
         
     def is_signature_finished(self, document_name):
@@ -233,7 +247,7 @@ class AddTokenHandler(tornado.web.RequestHandler):
         data = json.loads(self.request.body)
         print(token)
         if "pwd" not in data or data["pwd"] != "secret" or "num" not in data:
-            self.set_status(400)
+            self.set_status(401)
             self.write("Go away")
             return
         s = getServer()
@@ -243,6 +257,17 @@ class AddTokenHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.write("Dublicate")
             return
+        self.write("ok")
+        
+class RevokeHandler(tornado.web.RequestHandler):
+    def post(self, login):
+        data = json.loads(self.request.body)
+        if "pwd" not in data or data["pwd"] != "secret":
+            self.set_status(401)
+            self.write("Go away")
+            return
+        s = getServer()
+        s.db.revoke_user(login)
         self.write("ok")
 
 """
@@ -297,8 +322,14 @@ class AuthHandler(tornado.web.RequestHandler):
         auth = self.request.headers.get('Authorization')
         auth_data = pickle.loads(b64decode(auth))
         login, challange_sig = auth_data[0], auth_data[1]
-        # check weahter challcange is fresh
+        
         s = getServer()
+        # check whether this user is revoked
+        if s.db.is_user_revoked(login):
+            print("This user is revoked ({})".format(login))
+            self.set_header('WWW-Authenticate', 'CustomAuth')
+            return None
+        # check if challcange is fresh
         challange, challange_time, pk_base64 = s.db.get_challange_and_PK(login)
         if (time() - challange_time) > s.db.CHALLANGE_LIVE: # our challange is out of date
             print("User challange is out of date")
@@ -323,11 +354,16 @@ class GetPublicKeysHandler(AuthHandler):
             self.write("Unauthorized")
             return
         data = json.loads(self.request.body)
-        if "signers" not in data:
+        if "signers" not in data or "timestamp" not in data:
             self.set_status(400)
             self.write("Invalid data format")
             return
         signers = data["signers"]
+        timestamp = data["timestamp"]
+        if not isinstance(timestamp, int):
+            self.set_status(400)
+            self.write("Invalid timestamp format")
+            return
         # check if list is provided
         if not isinstance(signers, list):
             self.set_status(400)
@@ -340,7 +376,7 @@ class GetPublicKeysHandler(AuthHandler):
                 self.write("Invalid signers list format")
                 return
         s = getServer()
-        signers_info_map = s.db.get_pbulic_keys(signers)
+        signers_info_map = s.db.get_pbulic_keys(signers, timestamp)
         self.write(json.dumps(signers_info_map))
         
 class AddDocumentHandler(AuthHandler):
@@ -360,7 +396,11 @@ class AddDocumentHandler(AuthHandler):
             self.write("Unsupported file extension")
             return
         s = getServer()
-        signers = s.db.get_ordered_signers_list()
+        
+        # create timestamp
+        timestamp = int(time())
+        
+        signers = s.db.get_ordered_signers_list(timestamp)
         print("Signers list for new doc: {}".format(signers))
         try:
             s.db.add_docuemtn(fname, signers)
@@ -368,9 +408,11 @@ class AddDocumentHandler(AuthHandler):
             self.set_status(400)
             self.write("Dublicate document name")
             return
+        # serialize timestamp
+        timestamp_ser = timestamp.to_bytes(8, byteorder='little')
         # now we can save file to files directory
         with open(os.path.join("files", fname), 'wb') as fp:
-            fp.write(self.request.files[fname][0]['body'])
+            fp.write(timestamp_ser + self.request.files[fname][0]['body']) # add timestamp to document
         with open(os.path.join("signatures", fname + '.sig'), 'w') as fp:
             json.dump([], fp)
         self.write('ok')
@@ -454,7 +496,7 @@ class SignHandler(AuthHandler):
         signers_list, cur_index = s.db.get_signers_list(name)
         cur_list = signers_list[:cur_index+1]
         
-        public_keys_map = s.db.get_pbulic_keys(cur_list)
+        public_keys_map = s.db.get_pbulic_keys(cur_list, 0)
         
         uid_hashes = [s.pkg.generateUID(login) for login in cur_list]
         signers_info = [(uid_hashes[i], public_keys_map[cur_list[i]]) for i in range(len(cur_list))]
@@ -508,6 +550,7 @@ class Server(object):
         return tornado.web.Application([
             (r"/register/(.*)", RegisterHandler),
             (r"/addtoken/(.*)", AddTokenHandler),
+            (r"/revoke/(.*)", RevokeHandler),
             (r"/public", PublicParamsHandler),
             (r"/pks", GetPublicKeysHandler),
             (r"/adddocument", AddDocumentHandler),

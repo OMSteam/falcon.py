@@ -102,6 +102,11 @@ class Client(object):
         r = requests.post('{}/addtoken/{}'.format(self.url, token), data=json.dumps({'pwd':'secret', 'num':num}))
         if r.status_code != 200:
             raise ValueError("Error {}: {}".format(r.status_code, r.content))
+            
+    def revoke_user(self, login):
+        r = requests.post('{}/revoke/{}'.format(self.url, login), data=json.dumps({'pwd':'secret'}))
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
         
     def register(self, token):
         r = requests.post('{}/register/{}'.format(self.url, token), data=json.dumps({'login': self.login, 'pk':b64encode(json.dumps(self.pk).encode('ascii')).decode('ascii')}))
@@ -202,15 +207,15 @@ class Client(object):
             print(r)
         return json.loads(r.content)
         
-    def get_public_keys(self, signers_list):
+    def get_public_keys(self, signers_list, timestamp):
         print(signers_list)
-        r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list}))
+        r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list,"timestamp":timestamp}))
         if r.status_code == 401:
             self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
             print("Unauthorized")
             challange = r.headers['Www-Authenticate']
             print("Challange: {}".format(challange))
-            r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list}))
+            r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list,"timestamp":timestamp}))
             print(r)
         if r.status_code != 200:
             raise ValueError("Error {}: {}".format(r.status_code, r.content))
@@ -218,9 +223,11 @@ class Client(object):
         
     def verify_document(self, name):
         msg = self.get_document(name)
+        timestamp_bin = msg[:8]
+        timestamp = (int).from_bytes(timestamp_bin, byteorder='little')
         sig_agg = self.get_finished_signature(name)
         signers = self.get_signers(name)
-        pk_map = self.get_public_keys(signers)
+        pk_map = self.get_public_keys(signers, timestamp)
         
         signers_info = [(self.generateUID(signers[i]), pk_map[signers[i]]) for i in range(len(signers))]
         return verify_agg(
@@ -243,7 +250,7 @@ class Client(object):
         return json.loads(r.content)
         
 def cli():
-    commands = ['addtoken', 'register', 'signqueue', 'adddocument', 'sign', 'validate', 'allsigned']
+    commands = ['addtoken', 'revoke', 'register', 'signqueue', 'adddocument', 'sign', 'validate', 'allsigned']
     parser = argparse.ArgumentParser(description='Test OMS client')
     parser.add_argument('command', metavar='command', type=str, choices=commands, help='test client command ({})'.format('/'.join(commands)))
     parser.add_argument('--url', help='OMS server URL', required=True)
@@ -272,8 +279,10 @@ def main():
         sys.exit(1)
     login = args.id
     client = Client(login, args.url)
-
-    if args.command == 'register':
+    
+    if args.command == 'revoke':
+        client.revoke_user(login)
+    elif args.command == 'register':
         if args.token is None:
             print("token is required to register")
             sys.exit(1)
@@ -329,7 +338,5 @@ def main():
         signed = client.get_all_signed()
         print("Signed documents: {}".format(signed))
         
-    
-
 if __name__ == "__main__":
     main()
