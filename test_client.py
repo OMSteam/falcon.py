@@ -91,7 +91,10 @@ class FalconsteinClient(object):
                 return False
         return True
 
-def main(login, signers_list):
+def main(login, file):
+    if file not in os.listdir('.'):
+        print("Invalid file in current directory")
+        sys.exit(1)
     r = requests.get('http://localhost:8899/public')
     public = json.loads(r.content)
     client = FalconsteinClient(login, public["n"], public["MPK"])
@@ -109,13 +112,13 @@ def main(login, signers_list):
     else:
         cert = pickle.loads(open(login + '.cert', 'rb').read())
     auth_data = b64encode(pickle.dumps([login, client.sign_1(b"empty", cert, public["MPK"])])).decode('ascii')
-    r = requests.post('http://localhost:8899/pks', data=json.dumps({'signers':'asdfsd'}), headers={'Authorization' : auth_data})
+    r = requests.post('http://localhost:8899/adddocument', files={file: open(file, 'rb')} , headers={'Authorization' : auth_data})
     if r.status_code == 401:
         print("Unauthorized")
         challange = r.headers['Www-Authenticate']
         print("Challange: {}".format(challange))
         auth_data = b64encode(pickle.dumps([login, client.sign_1(challange.encode('ascii'), cert, public["MPK"])])).decode('ascii')
-        r = requests.post('http://localhost:8899/pks', data=json.dumps({'signers':signers_list}), headers={'Authorization' : auth_data})
+        r = requests.post('http://localhost:8899/adddocument', files={file: open(file, 'rb')} , headers={'Authorization' : auth_data})
         print(r)
         print(r.content)
         
@@ -123,4 +126,4 @@ def main(login, signers_list):
     
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2:])
+    main(sys.argv[1], sys.argv[2])

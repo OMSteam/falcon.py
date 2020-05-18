@@ -18,7 +18,7 @@ from time import time
 
 class ServerDBWrapper(object):
     CHALLANGE_LENGTH = 100
-    CHALLANGE_LIVE = 10#60*30
+    CHALLANGE_LIVE = 10 #60*30
 
     def __init__(self, host, user, passwd):
         self.mydb = mysql.connector.connect(
@@ -112,7 +112,8 @@ class ServerDBWrapper(object):
             challange=self.random_challange(self.CHALLANGE_LENGTH),
             time=time() # fresh time
             )
-        ) 
+        )
+        self.mydb.commit()
         cursor.close()
         
     def get_pbulic_keys(self, signers_list):
@@ -125,7 +126,24 @@ class ServerDBWrapper(object):
         result = cursor.fetchall()
         cursor.close()
         return [(e[0], e[1]) for e in result] # list of tuples (id, PK)
-
+        
+    def get_ordered_signers_list(self):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT id FROM Users ORDER BY StockCount") 
+        result = cursor.fetchall()
+        cursor.close()
+        return [e[0] for e in result]
+        
+    def add_docuemtn(self, name, signers_list):
+        cursor = self.mydb.cursor()
+        cursor.execute("INSERT INTO Documents(Name, SignersList, CurrentSigner) VALUES('{name}', '{signers}', 0)".format(
+            name=name, 
+            signers=b64encode(pickle.dumps(signers_list)).decode('ascii'), 
+            )
+        )
+        self.mydb.commit()
+        cursor.close()
+        
 class PKG(object):
     PKG_params = 'server_{}.params'
 
@@ -197,7 +215,12 @@ class RegisterHandler(tornado.web.RequestHandler):
             self.write("Invalid token")
             return
         stock_num = s.db.get_stock_num(token)
-        s.db.add_user(data["login"], pk, stock_num)
+        try:
+            s.db.add_user(data["login"], pk, stock_num)
+        except mysql.connector.errors.IntegrityError as e:
+            self.set_status(400)
+            self.write("Dublicate login")
+            return
         s.db.del_token(token)
         
         cert = s.pkg.GenerateUserCert(s.pkg.generateUID(data["login"]))
@@ -268,7 +291,37 @@ class GetPublicKeysHandler(AuthHandler):
             id = signer_info[0]
             signers_info_map[id] = pickle.loads(b64decode(signer_info[1]))
         self.write(json.dumps(signers_info_map))
-
+        
+class AddDocumentHandler(AuthHandler):
+    def post(self):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        if len(list(self.request.files.keys())) != 1:
+            self.set_status(400)
+            self.write("Only single file submission is supported")
+            return
+        fname = list(self.request.files.keys())[0]
+        extn = os.path.splitext(fname)[1]
+        if extn != '.pdf':
+            self.set_status(400)
+            self.write("Unsupported file extension")
+            return
+        s = getServer()
+        signers = s.db.get_ordered_signers_list()
+        print("Signers list for new doc: {}".format(signers))
+        try:
+            s.db.add_docuemtn(fname, signers)
+        except mysql.connector.errors.IntegrityError as e:
+            self.set_status(400)
+            self.write("Dublicate document name")
+            return
+        # now we can save file to files directory
+        with open(os.path.join("files", fname), 'wb') as fp:
+            fp.write(self.request.files[fname][0]['body'])
+        self.write('ok')
+        
 class Server(object):
     def __init__(self, t):
         self.pkg = PKG(t)
@@ -281,6 +334,7 @@ class Server(object):
             (r"/addtoken/(.*)", AddTokenHandler),
             (r"/public", PublicParamsHandler),
             (r"/pks", GetPublicKeysHandler),
+            (r"/adddocument", AddDocumentHandler),
         ])
 
 def getServer():
