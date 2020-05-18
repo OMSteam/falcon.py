@@ -106,13 +106,24 @@ class ServerDBWrapper(object):
         
     def update_challange(self, id):
         cursor = self.mydb.cursor()
-        cursor.execute("UPDATE Users SET Challange='{challange}', ChallangeTime={time} WHERE id='{id}".format(
+        cursor.execute("UPDATE Users SET Challange='{challange}', ChallangeTime={time} WHERE id='{id}'".format(
             id=id,
             challange=self.random_challange(self.CHALLANGE_LENGTH),
             time=time() # fresh time
             )
         ) 
         cursor.close()
+        
+    def get_pbulic_keys(self, signers_list):
+        # prepare query filter
+        flt = ' OR '.join(["id='{}'".format(signer) for signer in signers_list])
+        print("DEBUG filter: {}".format(flt))
+    
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT id, PK FROM Users WHERE ({filter})".format(filter=flt)) 
+        result = cursor.fetchall()
+        cursor.close()
+        return [(e[0], e[1]) for e in result] # list of tuples (id, PK)
 
 class PKG(object):
     def __init__(self, t):
@@ -216,7 +227,7 @@ class AuthHandler(tornado.web.RequestHandler):
             self.set_header('WWW-Authenticate', challange)
         return None
         
-class GetSingersInfoHandler(AuthHandler):
+class GetPublicKeysHandler(AuthHandler):
     def post(self):
         if self.current_user is None:
             self.set_status(401)
@@ -227,7 +238,25 @@ class GetSingersInfoHandler(AuthHandler):
             self.set_status(400)
             self.write("Invalid data format")
             return
-        self.write('ok')
+        signers = data["signers"]
+        # check if list is provided
+        if not isinstance(signers, list):
+            self.set_status(400)
+            self.write("Invalid signers list format")
+            return
+        # check that each element in the list is an instance of str
+        for s in signers:
+            if not isinstance(s, str):
+                self.set_status(400)
+                self.write("Invalid signers list format")
+                return
+        s = getServer()
+        signers_info = s.db.get_pbulic_keys(signers)
+        signers_info_map = {}
+        for signer_info in signers_info:
+            id = signer_info[0]
+            signers_info_map[id] = pickle.loads(b64decode(signer_info[1]))
+        self.write(json.dumps(signers_info_map))
 
 class Server(object):
     def __init__(self, t):
@@ -240,7 +269,7 @@ class Server(object):
             (r"/register/(.*)", RegisterHandler),
             (r"/addtoken/(.*)", AddTokenHandler),
             (r"/public", PublicParamsHandler),
-            (r"/pks", GetSingersInfoHandler),
+            (r"/pks", GetPublicKeysHandler),
         ])
 
 def getServer():

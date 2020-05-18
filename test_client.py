@@ -91,7 +91,7 @@ class FalconsteinClient(object):
                 return False
         return True
 
-def main(login):
+def main(login, signers_list):
     r = requests.get('http://localhost:8899/public')
     public = json.loads(r.content)
     client = FalconsteinClient(login, public["n"], public["MPK"])
@@ -115,7 +115,7 @@ def main(login):
         challange = r.headers['Www-Authenticate']
         print("Challange: {}".format(challange))
         auth_data = b64encode(pickle.dumps([login, client.sign_1(challange.encode('ascii'), cert, public["MPK"])])).decode('ascii')
-        r = requests.post('http://localhost:8899/pks', data=json.dumps({'signers':'asdfsd'}), headers={'Authorization' : auth_data})
+        r = requests.post('http://localhost:8899/pks', data=json.dumps({'signers':signers_list}), headers={'Authorization' : auth_data})
         print(r)
         print(r.content)
         
@@ -123,4 +123,4 @@ def main(login):
     
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2:])
