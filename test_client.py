@@ -13,16 +13,21 @@ import json
 import requests
 import sys, os
 
-class FalconsteinClient(object):
+class Client(object):
     """
     uid - user ID
     t - schema parameter
     MPK - aka h from falcon
     """
-    def __init__(self, login, n, MPK):
-        self.MPK = MPK
+    def __init__(self, login, serverURL):
         self.login = login
-        self.n = n
+        self.url = serverURL
+        r = requests.get('{}/public'.format(self.url))
+        if r.status_code != 200:
+            raise ValueError("Server responded with code other than 200")
+        public = json.loads(r.content)
+        self.n = public["n"]
+        self.MPK = public["MPK"]
         self.sigma = 1.17 * sqrt(q / (2. * self.n))
         
     def set_uid(self, uid):
@@ -43,6 +48,9 @@ class FalconsteinClient(object):
         s1 = self.sk[0]
         s2 = self.sk[1]
         self.pk = add_zq(s1, mul_zq(s2, self.MPK))
+        
+    def build_auth_info(self, challange):
+        self.auth_info = b64encode(pickle.dumps([self.login, self.sign_1(challange, self.cert, self.MPK)])).decode('ascii')
 
     def sign_1(self, m, cert, MPK):
         sigma = self.sigma
@@ -90,14 +98,37 @@ class FalconsteinClient(object):
             ):
                 return False
         return True
+        
+    def add_token(self, token, num):
+        r = requests.post('{}/addtoken/{}'.format(self.url, token), data=json.dumps({'pwd':'secret', 'num':num}))
+        
+    def register(self, token):
+        r = requests.post('{}/register/testtoken'.format(self.url, token), data=json.dumps({'login': self.login, 'pk':b64encode(json.dumps(self.pk).encode('ascii')).decode('ascii')}))
+        self.cert = json.loads(r.content)
+        return self.cert
+    
+    def export_cert(self):
+        open(self.login + '.cert', 'wb').write(pickle.dumps(self.cert))
+        
+    def load_cert(self):
+        self.cert = pickle.loads(open(self.login + '.cert', 'rb').read())
+        
+    def add_document(self, file):
+        r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')} , headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')} , headers={'Authorization' : self.auth_info})
+            print(r)
+            print(r.content)
 
 def main(login, file):
     if file not in os.listdir('.'):
         print("Invalid file in current directory")
         sys.exit(1)
-    r = requests.get('http://localhost:8899/public')
-    public = json.loads(r.content)
-    client = FalconsteinClient(login, public["n"], public["MPK"])
+    client = Client(login, "http://localhost:8899")
     if not os.path.isfile(login + '.sk'):
         client.gen_sk()
         open(login + '.sk', 'wb').write(client.export_sk())
@@ -105,25 +136,13 @@ def main(login, file):
         client.load_sk(open(login + '.sk', 'rb').read())
     if not os.path.isfile(login + '.cert'):
         # we need to register this user
-        r = requests.post('http://localhost:8899/addtoken/testtoken', data=json.dumps({'pwd':'secret', 'num':'100'}))
-        r = requests.post('http://localhost:8899/register/testtoken', data=json.dumps({'login': login, 'pk':b64encode(json.dumps(client.pk).encode('ascii')).decode('ascii')}))
-        cert = json.loads(r.content)
-        open(login + '.cert', 'wb').write(pickle.dumps(cert))
+        client.add_token('testtoken', 100)
+        client.register('testtoken')
+        client.export_cert()
     else:
-        cert = pickle.loads(open(login + '.cert', 'rb').read())
-    auth_data = b64encode(pickle.dumps([login, client.sign_1(b"empty", cert, public["MPK"])])).decode('ascii')
-    r = requests.post('http://localhost:8899/adddocument', files={file: open(file, 'rb')} , headers={'Authorization' : auth_data})
-    if r.status_code == 401:
-        print("Unauthorized")
-        challange = r.headers['Www-Authenticate']
-        print("Challange: {}".format(challange))
-        auth_data = b64encode(pickle.dumps([login, client.sign_1(challange.encode('ascii'), cert, public["MPK"])])).decode('ascii')
-        r = requests.post('http://localhost:8899/adddocument', files={file: open(file, 'rb')} , headers={'Authorization' : auth_data})
-        print(r)
-        print(r.content)
-        
-    #uid = hash_to_point(public["n"], login.encode('ascii'))
-    
+        client.load_cert()
+    client.build_auth_info(b'empty')
+    client.add_document(file)
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])

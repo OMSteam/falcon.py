@@ -144,6 +144,13 @@ class ServerDBWrapper(object):
         self.mydb.commit()
         cursor.close()
         
+    def get_documents_to_sign(self, id):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT Name, SignersList, CurrentSigner FROM Documents WHERE CurrentSigner<>-1")
+        result = cursor.fetchall()
+        cursor.close()
+        return [e[0] for e in result if e[1][e[2]] == id] # we need those document names where current signer e[1][e[2]] (i.e. SignersList[CurSigner]) is equal to the given id
+        
 class PKG(object):
     PKG_params = 'server_{}.params'
 
@@ -322,6 +329,15 @@ class AddDocumentHandler(AuthHandler):
             fp.write(self.request.files[fname][0]['body'])
         self.write('ok')
         
+class SignQueueHandler(AuthHandler):
+    def get(self):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        id = self.current_user
+        
+        
 class Server(object):
     def __init__(self, t):
         self.pkg = PKG(t)
@@ -335,6 +351,7 @@ class Server(object):
             (r"/public", PublicParamsHandler),
             (r"/pks", GetPublicKeysHandler),
             (r"/adddocument", AddDocumentHandler),
+            (r"/signqueue", SignQueueHandler),
         ])
 
 def getServer():
