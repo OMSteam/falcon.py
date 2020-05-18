@@ -164,8 +164,9 @@ class Client(object):
         return json.loads(r.content)
             
 def cli():
-    parser = argparse.ArgumentParser(description='Doc88 pdf loader.')
-    parser.add_argument('command', metavar='command', type=str, help='test client command (addtoken, adddocument')
+    commands = ['addtoken', 'register', 'signqueue', 'adddocument']
+    parser = argparse.ArgumentParser(description='Test OMS client')
+    parser.add_argument('command', metavar='command', type=str, choices=commands, help='test client command ({})'.format('/'.join(commands)))
     parser.add_argument('--url', help='OMS server URL', required=True)
     parser.add_argument('--id', help='client id')
     parser.add_argument('--file', help='path to file')
