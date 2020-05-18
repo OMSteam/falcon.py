@@ -1,6 +1,7 @@
 # Our certs and seckret keys
 *.cert
 *.sk
+*.params
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

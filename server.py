@@ -13,6 +13,7 @@ import mysql.connector
 import tornado.ioloop
 import tornado.web
 import json
+import os
 from time import time
 
 class ServerDBWrapper(object):
@@ -33,9 +34,9 @@ class ServerDBWrapper(object):
         
     def check_schema(self):
         cursor = self.mydb.cursor()
-        cursor.execute("DROP TABLE Users")
-        cursor.execute("DROP TABLE RegTokens")
-        cursor.execute("DROP TABLE Documents")
+        #cursor.execute("DROP TABLE Users")
+        #cursor.execute("DROP TABLE RegTokens")
+        #cursor.execute("DROP TABLE Documents")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS Users(
             id VARCHAR(64) PRIMARY KEY,
@@ -126,8 +127,18 @@ class ServerDBWrapper(object):
         return [(e[0], e[1]) for e in result] # list of tuples (id, PK)
 
 class PKG(object):
-    def __init__(self, t):
-        self.keys = SecretKey(1 << t)
+    PKG_params = 'server_{}.params'
+
+    def __init__(self, t, rebuild=False):
+        keys = None
+        if not os.path.isfile(self.PKG_params.format(t)) or rebuild:
+            print("[*] generating schema parameters")
+            keys = SecretKey(1 << t)
+            pickle.dump(keys, open(self.PKG_params.format(t), 'wb'))
+        else:
+            print("[*] loading parameters")
+            keys = pickle.load(open(self.PKG_params.format(t), 'rb'))
+        self.keys = keys
         self.users_list = {}
         self.salt = None
 
