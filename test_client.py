@@ -120,9 +120,21 @@ class Client(object):
             print("Unauthorized")
             challange = r.headers['Www-Authenticate']
             print("Challange: {}".format(challange))
-            r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')} , headers={'Authorization' : self.auth_info})
+            r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')}, headers={'Authorization' : self.auth_info})
             print(r)
             print(r.content)
+            
+    def get_sign_queue(self):
+        r = requests.get('{}/signqueue'.format(self.url), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/signqueue'.format(self.url), headers={'Authorization' : self.auth_info})
+            print(r)
+            print(r.content)
+        return json.loads(r.content)
 
 def main(login, file):
     if file not in os.listdir('.'):
@@ -142,7 +154,8 @@ def main(login, file):
     else:
         client.load_cert()
     client.build_auth_info(b'empty')
-    client.add_document(file)
+    #client.add_document(file)
+    print(client.get_sign_queue())
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])

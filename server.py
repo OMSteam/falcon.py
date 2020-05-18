@@ -149,7 +149,7 @@ class ServerDBWrapper(object):
         cursor.execute("SELECT Name, SignersList, CurrentSigner FROM Documents WHERE CurrentSigner<>-1")
         result = cursor.fetchall()
         cursor.close()
-        return [e[0] for e in result if e[1][e[2]] == id] # we need those document names where current signer e[1][e[2]] (i.e. SignersList[CurSigner]) is equal to the given id
+        return [e[0] for e in result if pickle.loads(b64decode(e[1]))[e[2]] == id] # we need those document names where current signer e[1][e[2]] (i.e. SignersList[CurSigner]) is equal to the given id
         
 class PKG(object):
     PKG_params = 'server_{}.params'
@@ -336,6 +336,8 @@ class SignQueueHandler(AuthHandler):
             self.write("Unauthorized")
             return
         id = self.current_user
+        s = getServer()
+        self.write(json.dumps(s.db.get_documents_to_sign(id)))
         
         
 class Server(object):
