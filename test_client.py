@@ -103,7 +103,7 @@ def main(login):
     if not os.path.isfile(login + '.cert'):
         # we need to register this user
         r = requests.post('http://localhost:8899/addtoken/testtoken', data=json.dumps({'pwd':'secret', 'num':'100'}))
-        r = requests.post('http://localhost:8899/register/testtoken', data=json.dumps({'login': login, 'pk':b64encode(pickle.dumps(client.pk)).decode('ascii')}))
+        r = requests.post('http://localhost:8899/register/testtoken', data=json.dumps({'login': login, 'pk':b64encode(json.dumps(client.pk).encode('ascii')).decode('ascii')}))
         cert = json.loads(r.content)
         open(login + '.cert', 'wb').write(pickle.dumps(cert))
     else:

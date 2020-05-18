@@ -17,7 +17,7 @@ from time import time
 
 class ServerDBWrapper(object):
     CHALLANGE_LENGTH = 100
-    CHALLANGE_LIVE = 60*30
+    CHALLANGE_LIVE = 10#60*30
 
     def __init__(self, host, user, passwd):
         self.mydb = mysql.connector.connect(
@@ -33,13 +33,12 @@ class ServerDBWrapper(object):
         
     def check_schema(self):
         cursor = self.mydb.cursor()
-        #cursor.execute("DROP TABLE Users")
-        #cursor.execute("DROP TABLE RegTokens")
-        #cursor.execute("DROP TABLE Documents")
+        cursor.execute("DROP TABLE Users")
+        cursor.execute("DROP TABLE RegTokens")
+        cursor.execute("DROP TABLE Documents")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS Users(
-            num INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            UID VARCHAR(10000) NOT NULL,
+            id VARCHAR(64) PRIMARY KEY,
             PK VARCHAR(10000) NOT NULL,
             StockCount INT NOT NULL,
             RevokeDate DATETIME,
@@ -84,20 +83,11 @@ class ServerDBWrapper(object):
         cursor.close()
         return result
         
-    def UID_exists(self, UID):
+    def add_user(self, login, PK, stocks):
         cursor = self.mydb.cursor()
-        UIDbase64 = b64encode(pickle.dumps(UID)).decode('ascii')
-        cursor.execute("SELECT 1 FROM Users WHERE UID='{UID}'".format(UID=UIDbase64)) # todo validate input
-        result = len(cursor.fetchall()) != 0
-        cursor.close()
-        return result
-        
-    def add_user(self, UID, PK, stocks):
-        cursor = self.mydb.cursor()
-        UIDbase64 = b64encode(pickle.dumps(UID)).decode('ascii')
         PKbase64 = b64encode(pickle.dumps(PK)).decode('ascii')
-        cursor.execute("INSERT INTO Users(UID, PK, StockCount, RevokeDate, Challange, ChallangeTime) VALUES('{UID}', '{PK}', {stocks}, NULL, '{challange}', {time})".format(
-            UID=UIDbase64, 
+        cursor.execute("INSERT INTO Users(id, PK, StockCount, RevokeDate, Challange, ChallangeTime) VALUES('{id}', '{PK}', {stocks}, NULL, '{challange}', {time})".format(
+            id=login, 
             PK=PKbase64, 
             stocks=stocks, 
             challange=self.random_challange(self.CHALLANGE_LENGTH), 
@@ -107,24 +97,21 @@ class ServerDBWrapper(object):
         self.mydb.commit()
         cursor.close()
         
-    def get_challange_and_PK(self, UID):
+    def get_challange_and_PK(self, id):
         cursor = self.mydb.cursor()
-        UIDbase64 = b64encode(pickle.dumps(UID)).decode('ascii')
-        cursor.execute("SELECT Challange, ChallangeTime, PK FROM Users WHERE UID='{UID}'".format(UID=UIDbase64)) 
+        cursor.execute("SELECT Challange, ChallangeTime, PK FROM Users WHERE id='{id}'".format(id=id)) 
         result = cursor.fetchall()[0]
         cursor.close()
         return result[0], result[1], result[2]
         
-    def update_challange(self, UID):
+    def update_challange(self, id):
         cursor = self.mydb.cursor()
-        UIDbase64 = b64encode(pickle.dumps(UID)).decode('ascii')
-        cursor.execute("UPDATE Useres SET Challange='{challange}', ChallangeTime={time} WHERE UID='{UID}'".format(
-            UID=UIDbase64,
+        cursor.execute("UPDATE Users SET Challange='{challange}', ChallangeTime={time} WHERE id='{id}".format(
+            id=id,
             challange=self.random_challange(self.CHALLANGE_LENGTH),
             time=time() # fresh time
             )
         ) 
-        result = cursor.fetchall()
         cursor.close()
 
 class PKG(object):
@@ -163,6 +150,13 @@ class AddTokenHandler(tornado.web.RequestHandler):
             return
         self.write("ok")
 
+"""
+API:
+POST-request. 3 arguments:
+    1. Token string - passed via uri (domain/register/<TOKEN_STRIN>
+    2. Chosen login - in Json-dictionary passed via request body (key "login")
+    3. Generated Public Key - in Json-dictionary (key "PK")
+"""
 class RegisterHandler(tornado.web.RequestHandler):
     def post(self, token):
         data = json.loads(self.request.body)
@@ -170,7 +164,7 @@ class RegisterHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.write("Invalid data format")
             return
-        pk = pickle.loads(b64decode(data["pk"]))
+        pk = json.loads(b64decode(data["pk"]).decode('ascii'))
         if not isinstance(pk, list):
             self.set_status(400)
             self.write("Invalid pk format ({})".format(type(pk)))
@@ -181,15 +175,10 @@ class RegisterHandler(tornado.web.RequestHandler):
             self.write("Invalid token")
             return
         stock_num = s.db.get_stock_num(token)
-        uid = s.pkg.generateUID(data["login"])
-        if s.db.UID_exists(uid):
-            self.set_status(400)
-            self.wrtie("This login is unavailable")
-            return
-        s.db.add_user(uid, pk, stock_num)
+        s.db.add_user(data["login"], pk, stock_num)
         s.db.del_token(token)
         
-        cert = s.pkg.GenerateUserCert(uid)
+        cert = s.pkg.GenerateUserCert(s.pkg.generateUID(data["login"]))
         # return cert to user
         self.write(json.dumps(cert))
         
@@ -210,16 +199,16 @@ class AuthHandler(tornado.web.RequestHandler):
         login, challange_sig = auth_data[0], auth_data[1]
         # check weahter challcange is fresh
         s = getServer()
-        uid = s.pkg.generateUID(login)
-        challange, challange_time, pk_base64 = s.db.get_challange_and_PK(uid)
+        challange, challange_time, pk_base64 = s.db.get_challange_and_PK(login)
         if (time() - challange_time) > s.db.CHALLANGE_LIVE: # our challange is out of date
             print("User challange is out of date")
-            s.db.update_challange(uid)
-            challange, _, _ = s.db.get_challange_and_PK(uid)
+            s.db.update_challange(login)
+            challange, _, _ = s.db.get_challange_and_PK(login)
             self.set_header('WWW-Authenticate', challange)
             return None
         # challange is fresh, check sig
         pk = pickle.loads(b64decode(pk_base64))
+        uid = s.pkg.generateUID(login)
         if verify_1(s.pkg.keys.n, challange.encode('ascii'), challange_sig, uid, pk, s.pkg.getMPK()):
             return login
         else:
