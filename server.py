@@ -339,6 +339,13 @@ class SignQueueHandler(AuthHandler):
         s = getServer()
         self.write(json.dumps(s.db.get_documents_to_sign(id)))
         
+class FileDownloadHandler(tornado.web.StaticFileHandler, AuthHandler):
+    async def get(self, name):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        await super().get(name)   
         
 class Server(object):
     def __init__(self, t):
@@ -354,6 +361,7 @@ class Server(object):
             (r"/pks", GetPublicKeysHandler),
             (r"/adddocument", AddDocumentHandler),
             (r"/signqueue", SignQueueHandler),
+            (r"/getdocument/(.*)", FileDownloadHandler, {"path": "files"}),
         ])
 
 def getServer():

@@ -135,11 +135,23 @@ class Client(object):
             print(r)
             print(r.content)
         return json.loads(r.content)
+        
+    def get_document(self, name):
+        r = requests.get('{}/getdocument/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/getdocument/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+            print(r)
+            with open(name, 'wb') as fp:
+                fp.write(r.content)
 
 def main(login, file):
-    if file not in os.listdir('.'):
-        print("Invalid file in current directory")
-        sys.exit(1)
+    #if file not in os.listdir('.'):
+    #    print("Invalid file in current directory")
+    #    sys.exit(1)
     client = Client(login, "http://localhost:8899")
     if not os.path.isfile(login + '.sk'):
         client.gen_sk()
@@ -155,7 +167,7 @@ def main(login, file):
         client.load_cert()
     client.build_auth_info(b'empty')
     #client.add_document(file)
-    print(client.get_sign_queue())
+    client.get_document(file)
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])
