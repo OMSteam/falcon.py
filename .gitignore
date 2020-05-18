@@ -3,6 +3,7 @@
 *.sk
 *.params
 files/
+signatures/
 *.pdf
 
 # Byte-compiled / optimized / DLL files

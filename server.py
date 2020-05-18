@@ -151,6 +151,13 @@ class ServerDBWrapper(object):
         cursor.close()
         return [e[0] for e in result if pickle.loads(b64decode(e[1]))[e[2]] == id] # we need those document names where current signer e[1][e[2]] (i.e. SignersList[CurSigner]) is equal to the given id
         
+    def get_cur_signer_for_document(self, document_name):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT SignersList, CurrentSigner FROM Documents WHERE Name='{doc}' AND CurrentSigner<>-1".format(doc=document_name))
+        result = cursor.fetchall()[0]
+        cursor.close()
+        return pickle.loads(b64decode(result[0]))[result[1]]
+        
 class PKG(object):
     PKG_params = 'server_{}.params'
 
@@ -219,7 +226,7 @@ class RegisterHandler(tornado.web.RequestHandler):
         s = getServer()
         if not s.db.check_token(token):
             self.set_status(401)
-            self.write("Invalid token")
+            self.write("Invalid token ({})".format(token))
             return
         stock_num = s.db.get_stock_num(token)
         try:
@@ -327,6 +334,8 @@ class AddDocumentHandler(AuthHandler):
         # now we can save file to files directory
         with open(os.path.join("files", fname), 'wb') as fp:
             fp.write(self.request.files[fname][0]['body'])
+        with open(os.path.join("signatures", fname + '.sig'), 'w') as fp:
+            json.dump([], fp)
         self.write('ok')
         
 class SignQueueHandler(AuthHandler):
@@ -345,7 +354,21 @@ class FileDownloadHandler(tornado.web.StaticFileHandler, AuthHandler):
             self.set_status(401)
             self.write("Unauthorized")
             return
-        await super().get(name)   
+        await super().get(name)
+        
+class GetAggSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
+    async def get(self, name):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        s = getServer()
+        cur_signer = s.db.get_cur_signer_for_document(name)
+        if self.current_user != cur_signer:
+            self.set_status(400)
+            self.write("Go away... You're not our current signer")
+            return
+        await super().get(name + ".sig")   
         
 class Server(object):
     def __init__(self, t):
@@ -362,6 +385,7 @@ class Server(object):
             (r"/adddocument", AddDocumentHandler),
             (r"/signqueue", SignQueueHandler),
             (r"/getdocument/(.*)", FileDownloadHandler, {"path": "files"}),
+            (r"/getaggsig/(.*)", GetAggSignatureHandler, {"path": "signatures"})
         ])
 
 def getServer():

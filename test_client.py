@@ -12,6 +12,7 @@ from base64 import b64encode, b64decode
 import json
 import requests
 import sys, os
+import argparse
 
 class Client(object):
     """
@@ -41,10 +42,10 @@ class Client(object):
         self.sk = (s1, s2)
         
     def export_sk(self):
-        return pickle.dumps(self.sk)
+        return pickle.dump(self.sk, open(self.login + '.sk', 'wb'))
         
-    def load_sk(self, data):
-        self.sk = pickle.loads(data)
+    def load_sk(self):
+        self.sk = pickle.load(open(self.login + '.sk', 'rb'))
         s1 = self.sk[0]
         s2 = self.sk[1]
         self.pk = add_zq(s1, mul_zq(s2, self.MPK))
@@ -101,9 +102,13 @@ class Client(object):
         
     def add_token(self, token, num):
         r = requests.post('{}/addtoken/{}'.format(self.url, token), data=json.dumps({'pwd':'secret', 'num':num}))
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
         
     def register(self, token):
-        r = requests.post('{}/register/testtoken'.format(self.url, token), data=json.dumps({'login': self.login, 'pk':b64encode(json.dumps(self.pk).encode('ascii')).decode('ascii')}))
+        r = requests.post('{}/register/{}'.format(self.url, token), data=json.dumps({'login': self.login, 'pk':b64encode(json.dumps(self.pk).encode('ascii')).decode('ascii')}))
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
         self.cert = json.loads(r.content)
         return self.cert
     
@@ -133,7 +138,6 @@ class Client(object):
             print("Challange: {}".format(challange))
             r = requests.get('{}/signqueue'.format(self.url), headers={'Authorization' : self.auth_info})
             print(r)
-            print(r.content)
         return json.loads(r.content)
         
     def get_document(self, name):
@@ -147,27 +151,81 @@ class Client(object):
             print(r)
             with open(name, 'wb') as fp:
                 fp.write(r.content)
+                
+    def get_agg_signature(self, name):
+        r = requests.get('{}/getaggsig/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/getdocument/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+            print(r)
+        return json.loads(r.content)
+            
+def cli():
+    parser = argparse.ArgumentParser(description='Doc88 pdf loader.')
+    parser.add_argument('command', metavar='command', type=str, help='test client command (addtoken, adddocument')
+    parser.add_argument('--url', help='OMS server URL', required=True)
+    parser.add_argument('--id', help='client id')
+    parser.add_argument('--file', help='path to file')
+    parser.add_argument('--num', help='stocks num')
+    parser.add_argument('--token', help='token')
+    return parser
 
-def main(login, file):
-    #if file not in os.listdir('.'):
-    #    print("Invalid file in current directory")
-    #    sys.exit(1)
-    client = Client(login, "http://localhost:8899")
-    if not os.path.isfile(login + '.sk'):
+def main():
+    args = cli().parse_args()
+    
+    # admin commands
+    if args.command == 'addtoken':
+        if args.token is None or args.num is None:
+            print("Token name and stock number are required for this command!")
+            sys.exit(1)
+        client = Client('any', args.url)
+        client.add_token(args.token, args.num)
+        return
+    
+    # user commands
+    if args.id is None:
+        print("ID is needed for user commands!")
+        sys.exit(1)
+    login = args.id
+    client = Client(login, args.url)
+
+    if args.command == 'register':
+        if args.token is None:
+            print("token is required to register")
+            sys.exit(1)
         client.gen_sk()
-        open(login + '.sk', 'wb').write(client.export_sk())
-    else:
-        client.load_sk(open(login + '.sk', 'rb').read())
-    if not os.path.isfile(login + '.cert'):
-        # we need to register this user
-        client.add_token('testtoken', 100)
-        client.register('testtoken')
+        client.export_sk()
+        client.register(args.token)
         client.export_cert()
-    else:
-        client.load_cert()
+        return
+    # authenticated commands    
+    if not os.path.isfile(login + '.sk') or not os.path.isfile(login + '.cert'):
+        print("No .sk and/or .cert found. You need to register first")
+        sys.exit(1)
+    client.load_sk()
+    client.load_cert()
     client.build_auth_info(b'empty')
-    #client.add_document(file)
-    client.get_document(file)
+    
+    if args.command == 'signqueue':
+        sign_queue = client.get_sign_queue()
+        if len(sign_queue) > 0:
+            print("{}'s documents for signing:".format(login))
+            for d in sign_queue:
+                print("\t{doc}: currennt aggregate is {agg}".format(doc=d, agg=client.get_agg_signature(d)))
+        else:
+            print("{} has no documents to sign".format(login))
+        
+    if args.command == 'adddocument':
+        if args.file is None:
+            print("File is required for upload!")
+            sys.exit(1)
+        if args.file not in os.listdir('.'):
+            print("File should be located in the same directory with the script!")
+            sys.exit(1)
+        client.add_document(args.file)
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main()
