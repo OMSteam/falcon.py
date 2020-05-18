@@ -1,5 +1,5 @@
 # Our certs and seckret keys
-*.certs
+*.cert
 *.sk
 
 # Byte-compiled / optimized / DLL files
