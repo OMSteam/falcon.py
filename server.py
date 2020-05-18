@@ -3,7 +3,7 @@ from falcon import add, sub, mul, div, neg, fft, ifft
 from falcon import add_fft, mul_fft
 from falcon import mul_zq, div_zq, add_zq
 from falcon import SecretKey
-from falcon import hash_to_point, ManhattanNorm, verify_1
+from falcon import hash_to_point, ManhattanNorm, verify_1, verify_agg
 
 from random import randint, random, gauss, choice
 from math import pi, sqrt, floor, ceil, exp
@@ -125,7 +125,11 @@ class ServerDBWrapper(object):
         cursor.execute("SELECT id, PK FROM Users WHERE ({filter})".format(filter=flt)) 
         result = cursor.fetchall()
         cursor.close()
-        return [(e[0], e[1]) for e in result] # list of tuples (id, PK)
+        public_keys = [(e[0], e[1]) for e in result] # list of tuples (id, PK)
+        public_keys_map = {}
+        for (login, public_key) in public_keys:
+            public_keys_map[login] = pickle.loads(b64decode(public_key))
+        return public_keys_map
         
     def get_ordered_signers_list(self):
         cursor = self.mydb.cursor()
@@ -154,9 +158,46 @@ class ServerDBWrapper(object):
     def get_cur_signer_for_document(self, document_name):
         cursor = self.mydb.cursor()
         cursor.execute("SELECT SignersList, CurrentSigner FROM Documents WHERE Name='{doc}' AND CurrentSigner<>-1".format(doc=document_name))
-        result = cursor.fetchall()[0]
+        result = cursor.fetchall()
         cursor.close()
+        if len(result) == 0:
+            raise ValueError("Docuemnt doesn't exist or is already in the library (signed)")
+        result = result[0]
         return pickle.loads(b64decode(result[0]))[result[1]]
+        
+    def is_signature_finished(self, document_name):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT 1 FROM Documents WHERE Name='{doc}' AND CurrentSigner=-1".format(doc=document_name))
+        result = cursor.fetchall()
+        cursor.close()
+        return len(result) == 1
+        
+    def get_signers_list(self, document_name):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT SignersList, CurrentSigner FROM Documents WHERE Name='{doc}'".format(doc=document_name))
+        result = cursor.fetchall()
+        cursor.close()
+        if len(result) != 1:
+            raise ValueError("Document doesn't exist")
+        result = result[0]
+        return pickle.loads(b64decode(result[0])), result[1]
+        
+    def increase_current_signer(self, document_name):
+        signers_list, current_signer = self.get_signers_list(document_name)
+        current_signer += 1
+        if current_signer == len(signers_list):
+            current_signer = -1
+        cursor = self.mydb.cursor()
+        cursor.execute("UPDATE Documents SET CurrentSigner={cur_signer} WHERE Name='{doc}'".format(cur_signer=current_signer, doc=document_name))
+        self.mydb.commit()
+        cursor.close()
+        
+    def get_signed_documents(self):
+        cursor = self.mydb.cursor()
+        cursor.execute("SELECT Name FROM Documents WHERE CurrentSigner=-1")
+        result = cursor.fetchall()
+        cursor.close()
+        return [e[0] for e in result]
         
 class PKG(object):
     PKG_params = 'server_{}.params'
@@ -299,11 +340,7 @@ class GetPublicKeysHandler(AuthHandler):
                 self.write("Invalid signers list format")
                 return
         s = getServer()
-        signers_info = s.db.get_pbulic_keys(signers)
-        signers_info_map = {}
-        for signer_info in signers_info:
-            id = signer_info[0]
-            signers_info_map[id] = pickle.loads(b64decode(signer_info[1]))
+        signers_info_map = s.db.get_pbulic_keys(signers)
         self.write(json.dumps(signers_info_map))
         
 class AddDocumentHandler(AuthHandler):
@@ -363,12 +400,103 @@ class GetAggSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
             self.write("Unauthorized")
             return
         s = getServer()
-        cur_signer = s.db.get_cur_signer_for_document(name)
+        try:
+            cur_signer = s.db.get_cur_signer_for_document(name)
+        except ValueError as e:
+            self.set_status(400)
+            self.write("Document is not available for signing.")
+            return
         if self.current_user != cur_signer:
             self.set_status(400)
             self.write("Go away... You're not our current signer")
             return
         await super().get(name + ".sig")   
+        
+class GetFinalSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
+    async def get(self, name):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        s = getServer()
+        if not s.db.is_signature_finished(name):
+            self.set_status(400)
+            self.write("Document doesn't exist or its signature is not fully aggregated yet")
+            return
+        await super().get(name + ".sig")   
+        
+class SignHandler(AuthHandler):
+    def post(self, name):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        s = getServer()
+        try:
+            cur_signer = s.db.get_cur_signer_for_document(name)
+        except ValueError as e:
+            self.set_status(400)
+            self.write("Document is not available for signing.")
+            return
+        if self.current_user != cur_signer:
+            self.set_status(400)
+            self.write("Go away... You're not our current signer")
+            return
+        data = json.loads(self.request.body)
+        if "sig" not in data:
+            self.set_status(400)
+            self.write("Invalid request format")
+            return
+        sig = data["sig"]
+        sig_agg = json.load(open(os.path.join('signatures', name + '.sig'), 'r'))
+        msg = open(os.path.join('files', name), 'rb').read()
+        # todo signers info
+        signers_list, cur_index = s.db.get_signers_list(name)
+        cur_list = signers_list[:cur_index+1]
+        
+        public_keys_map = s.db.get_pbulic_keys(cur_list)
+        
+        uid_hashes = [s.pkg.generateUID(login) for login in cur_list]
+        signers_info = [(uid_hashes[i], public_keys_map[cur_list[i]]) for i in range(len(cur_list))]
+        if not verify_agg(
+            s.pkg.keys.n,
+            msg,
+            sig_agg + [sig],
+            signers_info,
+            s.pkg.getMPK()
+            ):
+            self.set_status(400)
+            self.write("Invalid signature")
+            return
+        print('Signature valid')
+        
+        json.dump(sig_agg + [sig], open(os.path.join('signatures', name + '.sig'), 'w')) # update aggregated signature
+        s.db.increase_current_signer(name) # set next signer (or finish signing)
+        self.write('ok')
+        
+class GetDocumentSighersHandler(AuthHandler):
+    def get(self, name):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        s = getServer()
+        try:
+            signers = s.db.get_signers_list(name)[0]
+        except ValueError as e:
+            self.set_status(404)
+            self.write("Document doesn't exist")
+            return
+        self.write(json.dumps(signers))
+        
+class GetSignedDocuments(AuthHandler):
+    def get(self):
+        if self.current_user is None:
+            self.set_status(401)
+            self.write("Unauthorized")
+            return
+        s = getServer()
+        self.write(json.dumps(s.db.get_signed_documents()))
         
 class Server(object):
     def __init__(self, t):
@@ -385,7 +513,11 @@ class Server(object):
             (r"/adddocument", AddDocumentHandler),
             (r"/signqueue", SignQueueHandler),
             (r"/getdocument/(.*)", FileDownloadHandler, {"path": "files"}),
-            (r"/getaggsig/(.*)", GetAggSignatureHandler, {"path": "signatures"})
+            (r"/getaggsig/(.*)", GetAggSignatureHandler, {"path": "signatures"}),
+            (r"/sign/(.*)", SignHandler),
+            (r"/getfinishedsig/(.*)", GetFinalSignatureHandler, {"path": "signatures"}),
+            (r"/getdocumentsigners/(.*)", GetDocumentSighersHandler),
+            (r"/allsigned", GetSignedDocuments),
         ])
 
 def getServer():

@@ -3,7 +3,7 @@ from falcon import add, sub, mul, div, neg, fft, ifft
 from falcon import add_fft, mul_fft
 from falcon import mul_zq, div_zq, add_zq
 from falcon import SecretKey
-from falcon import hash_to_point, ManhattanNorm, verify_1, H1
+from falcon import hash_to_point, ManhattanNorm, verify_1, H1, verify_agg
 
 from random import randint, random, gauss, choice
 from math import pi, sqrt, floor, ceil, exp
@@ -31,6 +31,9 @@ class Client(object):
         self.MPK = public["MPK"]
         self.sigma = 1.17 * sqrt(q / (2. * self.n))
         
+    def generateUID(self, login):
+        return hash_to_point(self.n, login.encode('ascii'))
+        
     def set_uid(self, uid):
         self.uid = uid
         
@@ -51,9 +54,9 @@ class Client(object):
         self.pk = add_zq(s1, mul_zq(s2, self.MPK))
         
     def build_auth_info(self, challange):
-        self.auth_info = b64encode(pickle.dumps([self.login, self.sign_1(challange, self.cert, self.MPK)])).decode('ascii')
+        self.auth_info = b64encode(pickle.dumps([self.login, self.sign_1(challange)])).decode('ascii')
 
-    def sign_1(self, m, cert, MPK):
+    def sign_1(self, m):
         sigma = self.sigma
         # generating random elements from (Z_q)^n
         y1 = [int(round(gauss(0, sigma))) for i in range(self.n)]
@@ -61,12 +64,12 @@ class Client(object):
         y1a = [int(round(gauss(0, sigma))) for i in range(self.n)]
         y2a = [int(round(gauss(0, sigma))) for i in range(self.n)]
         # compute e as H1 hash from message and random elements put throgh trapdoor one-way func (f_h)
-        e = H1(self.n, add_zq(y1, mul_zq(y2, MPK)), add_zq(y1a, mul_zq(y2a, MPK)), m)
+        e = H1(self.n, add_zq(y1, mul_zq(y2, self.MPK)), add_zq(y1a, mul_zq(y2a, self.MPK)), m)
         # !!!!!!!!!! TODO! Check who's who (cert and user's secret key) !!!!!!!!!!!!!!
         s1a = self.sk[0]
         s2a = self.sk[1]
-        s1 = cert[0]
-        s2 = cert[1]
+        s1 = self.cert[0]
+        s2 = self.cert[1]
         z = (
             add_zq(mul_zq(s1, e), y1),
             add_zq(mul_zq(s2, e), y2),
@@ -75,16 +78,11 @@ class Client(object):
         )
         return (e, z)
 
-    def sign_agg_step(self, m, cert, MPK, agg_sig):
-        #if len(agg_sig) == 0: # i == 1
-        #    pass # should we do anything special in this case?
-
+    def sign_agg_step(self, m, agg_sig):
         curSig = self.sign_1(
-            pickle.dumps([m] + agg_sig), # cast agg_sig signature chain to byte array
-            cert,
-            MPK
+            pickle.dumps([m] + agg_sig) # cast agg_sig signature chain to byte array
         )
-        return agg_sig + [curSig]
+        return curSig
 
     def verify_agg(self, m, agg_sig, signers_info, MPK):
         if len(agg_sig) != len(signers_info):
@@ -149,8 +147,7 @@ class Client(object):
             print("Challange: {}".format(challange))
             r = requests.get('{}/getdocument/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
             print(r)
-            with open(name, 'wb') as fp:
-                fp.write(r.content)
+        return r.content
                 
     def get_agg_signature(self, name):
         r = requests.get('{}/getaggsig/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
@@ -161,10 +158,92 @@ class Client(object):
             print("Challange: {}".format(challange))
             r = requests.get('{}/getdocument/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
             print(r)
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
+        print(r.content)
         return json.loads(r.content)
-            
+        
+    def get_finished_signature(self, name):
+        r = requests.get('{}/getfinishedsig/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/getfinishedsig/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+            print(r)
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
+        return json.loads(r.content)
+        
+    def sign_docuemtn(self, name):
+        msg = self.get_document(name)
+        agg_sig = self.get_agg_signature(name)
+        cur_sig = self.sign_agg_step(msg, agg_sig)
+        r = requests.post('{}/sign/{}'.format(self.url, name), headers={'Authorization' : self.auth_info}, data=json.dumps({'sig':cur_sig}))
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.post('{}/sign/{}'.format(self.url, name), headers={'Authorization' : self.auth_info}, data=json.dumps({'sig':cur_sig}))
+            print(r)
+        print(r)
+        print(r.content)
+        
+    def get_signers(self, name):
+        r = requests.get('{}/getdocumentsigners/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/getdocumentsigners/{}'.format(self.url, name), headers={'Authorization' : self.auth_info})
+            print(r)
+        return json.loads(r.content)
+        
+    def get_public_keys(self, signers_list):
+        print(signers_list)
+        r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list}))
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.post('{}/pks'.format(self.url), headers={'Authorization' : self.auth_info}, data=json.dumps({"signers":signers_list}))
+            print(r)
+        if r.status_code != 200:
+            raise ValueError("Error {}: {}".format(r.status_code, r.content))
+        return json.loads(r.content)
+        
+    def verify_document(self, name):
+        msg = self.get_document(name)
+        sig_agg = self.get_finished_signature(name)
+        signers = self.get_signers(name)
+        pk_map = self.get_public_keys(signers)
+        
+        signers_info = [(self.generateUID(signers[i]), pk_map[signers[i]]) for i in range(len(signers))]
+        return verify_agg(
+            self.n,
+            msg,
+            sig_agg,
+            signers_info,
+            self.MPK
+        )
+        
+    def get_all_signed(self):
+        r = requests.get('{}/allsigned'.format(self.url), headers={'Authorization' : self.auth_info})
+        if r.status_code == 401:
+            self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
+            print("Unauthorized")
+            challange = r.headers['Www-Authenticate']
+            print("Challange: {}".format(challange))
+            r = requests.get('{}/allsigned'.format(self.url), headers={'Authorization' : self.auth_info})
+            print(r)
+        return json.loads(r.content)
+        
 def cli():
-    commands = ['addtoken', 'register', 'signqueue', 'adddocument']
+    commands = ['addtoken', 'register', 'signqueue', 'adddocument', 'sign', 'validate', 'allsigned']
     parser = argparse.ArgumentParser(description='Test OMS client')
     parser.add_argument('command', metavar='command', type=str, choices=commands, help='test client command ({})'.format('/'.join(commands)))
     parser.add_argument('--url', help='OMS server URL', required=True)
@@ -172,6 +251,7 @@ def cli():
     parser.add_argument('--file', help='path to file')
     parser.add_argument('--num', help='stocks num')
     parser.add_argument('--token', help='token')
+    parser.add_argument('--name', help='docuement name (on server)')
     return parser
 
 def main():
@@ -219,7 +299,7 @@ def main():
         else:
             print("{} has no documents to sign".format(login))
         
-    if args.command == 'adddocument':
+    elif args.command == 'adddocument':
         if args.file is None:
             print("File is required for upload!")
             sys.exit(1)
@@ -227,6 +307,29 @@ def main():
             print("File should be located in the same directory with the script!")
             sys.exit(1)
         client.add_document(args.file)
+        
+    elif args.command == "sign":
+        if args.name is None:
+            print("Docuemtn name was not provided!")
+            sys.exit(1)
+        client.sign_docuemtn(args.name)
+        
+    elif args.command == "validate":
+        if args.name is None:
+            print("Docuemtn name was not provided!")
+            sys.exit(1)
+            
+        result = client.verify_document(args.name)
+        if result:
+            print("Docuement signature is valid")
+        else:
+            print("Docuement signature is invalid")
+            
+    elif args.command == "allsigned":
+        signed = client.get_all_signed()
+        print("Signed documents: {}".format(signed))
+        
+    
 
 if __name__ == "__main__":
     main()

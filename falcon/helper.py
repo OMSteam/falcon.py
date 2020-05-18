@@ -4,6 +4,8 @@ from common import q
 from fft import fft, ifft, sub, neg, add_fft, mul_fft
 from ntt import add_zq, mul_zq, div_zq
 
+import pickle
+
 # helper functions
 
 def ManhattanNorm(vec):
@@ -50,8 +52,6 @@ def verify_1(n, m, sig, uid, pk, MPK):
     e = sig[0]
     z = sig[1]
     z1, z2, z1a, z2a = z[0], z[1], z[2], z[3]
-    # we'll skip norm checks for now
-    # TODO check vectors' norm boundaries
 
     # restore e
     vev1 = add_zq(add_zq(z1, mul_zq(z2, MPK)), mul_zq(uid, neg(e)))
@@ -60,3 +60,18 @@ def verify_1(n, m, sig, uid, pk, MPK):
     print('e from sig: {}'.format(e))
     print('e resttored: {}'.format(e_check))
     return e == e_check
+    
+def verify_agg(n, m, agg_sig, signers_info, MPK):
+    if len(agg_sig) != len(signers_info):
+        return False
+    for i in range(len(agg_sig)):
+        curCheckMsg = pickle.dumps([m] + agg_sig[:i])
+        if not verify_1(
+            n,
+            curCheckMsg, agg_sig[i],
+            signers_info[i][0], # UID
+            signers_info[i][1], # Public Key
+            MPK
+        ):
+            return False
+    return True
