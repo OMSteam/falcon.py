@@ -13,6 +13,9 @@ import json
 import requests
 import sys, os
 import argparse
+import ntpath
+
+from datetime import datetime
 
 class Client(object):
     """
@@ -121,14 +124,14 @@ class Client(object):
     def load_cert(self):
         self.cert = pickle.loads(open(self.login + '.cert', 'rb').read())
         
-    def add_document(self, file):
-        r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')} , headers={'Authorization' : self.auth_info})
+    def add_document(self, name, body):
+        r = requests.post('{}/adddocument'.format(self.url), files={name: body} , headers={'Authorization' : self.auth_info})
         if r.status_code == 401:
             self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
             print("Unauthorized")
             challange = r.headers['Www-Authenticate']
             print("Challange: {}".format(challange))
-            r = requests.post('{}/adddocument'.format(self.url), files={file: open(file, 'rb')}, headers={'Authorization' : self.auth_info})
+            r = requests.post('{}/adddocument'.format(self.url), files={name: body}, headers={'Authorization' : self.auth_info})
             print(r)
             print(r.content)
             
@@ -236,7 +239,7 @@ class Client(object):
             sig_agg,
             signers_info,
             self.MPK
-        )
+        ), timestamp, msg[8:]
         
     def get_all_signed(self):
         r = requests.get('{}/allsigned'.format(self.url), headers={'Authorization' : self.auth_info})
@@ -259,6 +262,7 @@ def cli():
     parser.add_argument('--num', help='stocks num')
     parser.add_argument('--token', help='token')
     parser.add_argument('--name', help='docuement name (on server)')
+    parser.add_argument('--outdir', help='output directory path')
     return parser
 
 def main():
@@ -312,10 +316,13 @@ def main():
         if args.file is None:
             print("File is required for upload!")
             sys.exit(1)
-        if args.file not in os.listdir('.'):
-            print("File should be located in the same directory with the script!")
+        
+        if not os.path.isfile(args.file):
+            print("Ivalid file path!")
             sys.exit(1)
-        client.add_document(args.file)
+        name = ntpath.basename(args.file)
+        body = open(args.file, 'rb')
+        client.add_document(name, body)
         
     elif args.command == "sign":
         if args.name is None:
@@ -327,10 +334,18 @@ def main():
         if args.name is None:
             print("Docuemtn name was not provided!")
             sys.exit(1)
-            
-        result = client.verify_document(args.name)
+        if args.outdir is None:
+            print("Output directory path was not provided!")
+            sys.exit(1)
+        if not os.path.isdir(args.outdir):
+            print("Invalid output directory path!")
+            sys.exit(1)
+        
+        result, timestamp, body = client.verify_document(args.name)
         if result:
-            print("Docuement signature is valid")
+            print("Docuement signature is valid (signed on {time})".format(time=datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")))
+            with open(os.path.join(args.outdir, args.name), 'wb') as fp:
+                fp.write(body)
         else:
             print("Docuement signature is invalid")
             

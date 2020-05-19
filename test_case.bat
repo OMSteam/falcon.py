@@ -8,13 +8,13 @@ python test_client.py --url http://localhost:8899 --token user2token --id user2 
 python test_client.py --url http://localhost:8899 --token user3token --id user3 register
 python test_client.py --url http://localhost:8899 --token user4token --id user4 register
 
-python test_client.py --url http://localhost:8899 --id user4 --file some.pdf adddocument
+python test_client.py --url http://localhost:8899 --id user4 --file ..\test_files\some.pdf adddocument
 
 python test_client.py --url http://localhost:8899 --id user1 --name some.pdf sign
 python test_client.py --url http://localhost:8899 --id user2 --name some.pdf sign 
 python test_client.py --url http://localhost:8899 --id user3 --name some.pdf sign 
 python test_client.py --url http://localhost:8899 --id user4 --name some.pdf sign
 
-python test_client.py --url http://localhost:8899 --id user2 --name some.pdf validate
+python test_client.py --url http://localhost:8899 --id user2 --name some.pdf --outdir ..\test_out\ validate
 
 python test_client.py --url http://localhost:8899 --id user3 allsigned
