@@ -15,12 +15,14 @@ import tornado.web
 import json
 import os
 from time import time
+import argparse
 
 class ServerDBWrapper(object):
     CHALLANGE_LENGTH = 100
     CHALLANGE_LIVE = 10 #60*30
 
-    def __init__(self, host, user, passwd):
+    def __init__(self, host, user, passwd, clear=False):
+        self.clear = clear
         self.mydb = mysql.connector.connect(
             host=host,
             user=user,
@@ -34,9 +36,10 @@ class ServerDBWrapper(object):
         
     def check_schema(self):
         cursor = self.mydb.cursor()
-        cursor.execute("DROP TABLE Users")
-        cursor.execute("DROP TABLE RegTokens")
-        cursor.execute("DROP TABLE Documents")
+        if self.clear:
+            cursor.execute("DROP TABLE Users")
+            cursor.execute("DROP TABLE RegTokens")
+            cursor.execute("DROP TABLE Documents")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS Users(
             id VARCHAR(64) PRIMARY KEY,
@@ -216,9 +219,9 @@ class ServerDBWrapper(object):
 class PKG(object):
     PKG_params = 'server_{}.params'
 
-    def __init__(self, t, rebuild=False):
+    def __init__(self, t, regen=False):
         keys = None
-        if not os.path.isfile(self.PKG_params.format(t)) or rebuild:
+        if not os.path.isfile(self.PKG_params.format(t)) or regen:
             print("[*] generating schema parameters")
             keys = SecretKey(1 << t)
             pickle.dump(keys, open(self.PKG_params.format(t), 'wb'))
@@ -541,9 +544,9 @@ class GetSignedDocuments(AuthHandler):
         self.write(json.dumps(s.db.get_signed_documents()))
         
 class Server(object):
-    def __init__(self, t):
-        self.pkg = PKG(t)
-        self.db = ServerDBWrapper('192.168.1.10', 'root', 'rootpassword')
+    def __init__(self, t, dbhost, dbuser, dbpass, regen=False, cleardb=False):
+        self.pkg = PKG(t, regen=regen)
+        self.db = ServerDBWrapper(dbhost, dbuser, dbpass, clear=cleardb)
         self.db.check_schema()
         
     def make_app(self):
@@ -566,13 +569,29 @@ class Server(object):
 def getServer():
     global s
     return s
+    
+class NegateAction(argparse.Action):
+    def __call__(self, parser, ns, values, option):
+        setattr(ns, self.dest, option[2:4] != 'no')
+    
+def cli():
+    parser = argparse.ArgumentParser(description='OMS server')
+    parser.add_argument('parameter', metavar='param', type=int, help='security paramter t')
+    parser.add_argument('--dbhost', help='MySQL host name', required=True)
+    parser.add_argument('--dbuser', help='MySQL user', required=True)
+    parser.add_argument('--dbpass', help='MySQL password', required=True)
+    parser.add_argument('--port', type=int, help='Server listen port', required=True)
+    parser.add_argument('--regen', dest='regen', action=NegateAction, help='regenerate schema parameters', nargs=0)
+    parser.add_argument('--cleardb', dest='cleardb', action=NegateAction, help='clears database', nargs=0)
+    return parser
 
 def main():
-    # TEST AGG SIGN CELL
+    args = cli().parse_args()
+    
     global s
-    s = Server(4)
+    s = Server(args.parameter, args.dbhost, args.dbuser, args.dbpass, regen=args.regen, cleardb=args.cleardb)
     app = s.make_app()
-    app.listen(8899)
+    app.listen(args.port)
     tornado.ioloop.IOLoop.current().start()
 
 if __name__ == "__main__":
