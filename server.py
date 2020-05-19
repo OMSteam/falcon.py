@@ -89,8 +89,11 @@ class ServerDBWrapper(object):
     def get_stock_num(self, token):
         cursor = self.mydb.cursor()
         cursor.execute("SELECT StockCount FROM RegTokens WHERE Token='{token}'".format(token=token)) # todo validate input
-        result = cursor.fetchall()[0][0]
+        result = cursor.fetchall()
         cursor.close()
+        if len(result) != 0:
+            raise ValueError("Token {} doesn't exist".format(token))
+        result = result[0][0]
         return result
         
     def add_user(self, login, PK, stocks):
@@ -110,8 +113,11 @@ class ServerDBWrapper(object):
     def get_challange_and_PK(self, id):
         cursor = self.mydb.cursor()
         cursor.execute("SELECT Challange, ChallangeTime, PK FROM Users WHERE id='{id}'".format(id=id)) 
-        result = cursor.fetchall()[0]
+        result = cursor.fetchall()
         cursor.close()
+        if len(result) != 1:
+            raise ValueError("User id doesn't exist in the database ({})".format(id))
+        result = result[0]
         return result[0], result[1], result[2]
         
     def is_user_revoked(self, id):
