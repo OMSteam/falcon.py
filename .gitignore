@@ -2,6 +2,7 @@
 *.cert
 *.sk
 *.params
+*.log
 files/
 signatures/
 *.pdf

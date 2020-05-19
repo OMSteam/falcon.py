@@ -16,6 +16,15 @@ import json
 import os
 from time import time
 import argparse
+import datetime
+
+if not os.path.isfile("server.log"):
+    open("server.log", "w").close()
+log = open("server.log", 'a')
+def log_line(msg):
+    global log
+    log.write("{time}: {msg}\n".format(time=datetime.datetime.now().time(), msg=msg))
+    log.flush()
 
 class ServerDBWrapper(object):
     CHALLANGE_LENGTH = 100
@@ -23,12 +32,14 @@ class ServerDBWrapper(object):
 
     def __init__(self, host, user, passwd, clear=False):
         self.clear = clear
+        log_line("connecting to database")
         self.mydb = mysql.connector.connect(
             host=host,
             user=user,
             passwd=passwd,
             database="OMS"
         )
+        log_line("connected")
         
     def random_challange(self, length):
         alphabet = [chr(i) for i in list(range(97, 123)) + list(range(65, 91)) + list(range(48, 58))]
@@ -37,6 +48,7 @@ class ServerDBWrapper(object):
     def check_schema(self):
         cursor = self.mydb.cursor()
         if self.clear:
+            log_line("dropping tables (clearing database)")
             cursor.execute("DROP TABLE Users")
             cursor.execute("DROP TABLE RegTokens")
             cursor.execute("DROP TABLE Documents")
@@ -91,7 +103,7 @@ class ServerDBWrapper(object):
         cursor.execute("SELECT StockCount FROM RegTokens WHERE Token='{token}'".format(token=token)) # todo validate input
         result = cursor.fetchall()
         cursor.close()
-        if len(result) != 0:
+        if len(result) != 1:
             raise ValueError("Token {} doesn't exist".format(token))
         result = result[0][0]
         return result
@@ -160,7 +172,7 @@ class ServerDBWrapper(object):
         cursor.close()
         return [e[0] for e in result]
         
-    def add_docuemtn(self, name, signers_list):
+    def add_document(self, name, signers_list):
         cursor = self.mydb.cursor()
         cursor.execute("INSERT INTO Documents(Name, SignersList, CurrentSigner) VALUES('{name}', '{signers}', 0)".format(
             name=name, 
@@ -209,7 +221,10 @@ class ServerDBWrapper(object):
         signers_list, current_signer = self.get_signers_list(document_name)
         current_signer += 1
         if current_signer == len(signers_list):
+            log_line("Document {} signing is complete!".format(document_name))
             current_signer = -1
+        if current_signer != -1:
+            log_line("Next signer in signing queue for document {} is {}".format(document_name, signers_list[current_signer]))
         cursor = self.mydb.cursor()
         cursor.execute("UPDATE Documents SET CurrentSigner={cur_signer} WHERE Name='{doc}'".format(cur_signer=current_signer, doc=document_name))
         self.mydb.commit()
@@ -228,12 +243,14 @@ class PKG(object):
     def __init__(self, t, regen=False):
         keys = None
         if not os.path.isfile(self.PKG_params.format(t)) or regen:
-            print("[*] generating schema parameters")
+            log_line("generating schema parameters (t = {})".format(t))
             keys = SecretKey(1 << t)
+            log_line("parameters were generated")
             pickle.dump(keys, open(self.PKG_params.format(t), 'wb'))
         else:
-            print("[*] loading parameters")
             keys = pickle.load(open(self.PKG_params.format(t), 'rb'))
+            log_line("parameters were restored from file")
+            
         self.keys = keys
         self.users_list = {}
         self.salt = None
@@ -251,6 +268,13 @@ class PKG(object):
         return self.keys.sample_preimage_fft(uid)
 
 # ------------------- SERVER -----------------------
+"""
+API:
+POST-request. 3 arguments:
+    1. Token string - passed via uri (domain/register/<TOKEN_STRIN>
+    2. Admin password - in Json-dictionary passed via request body (key "pwd")
+    3. Stock number - in Json-dictionary (key "num")
+"""
 class AddTokenHandler(tornado.web.RequestHandler):
     def post(self, token):
         data = json.loads(self.request.body)
@@ -266,6 +290,7 @@ class AddTokenHandler(tornado.web.RequestHandler):
             self.set_status(400)
             self.write("Dublicate")
             return
+        log_line("token {} was added by admin".format(token))
         self.write("ok")
         
 class RevokeHandler(tornado.web.RequestHandler):
@@ -277,6 +302,7 @@ class RevokeHandler(tornado.web.RequestHandler):
             return
         s = getServer()
         s.db.revoke_user(login)
+        log_line("user {} signing privelege was revoked".format(login))
         self.write("ok")
 
 """
@@ -313,35 +339,48 @@ class RegisterHandler(tornado.web.RequestHandler):
         s.db.del_token(token)
         
         cert = s.pkg.GenerateUserCert(s.pkg.generateUID(data["login"]))
+        
+        log_line("new user registered with id {}".format(data["login"]))
         # return cert to user
         self.write(json.dumps(cert))
-        
+
+"""
+API:
+GET-request. No args.
+Returns public parameters (n, q, h).
+"""
 class PublicParamsHandler(tornado.web.RequestHandler):
     def get(self):
         s = getServer()
         global q
+        log_line("public parameters were requested")
         self.write(json.dumps({"MPK":s.pkg.getMPK(),"n":s.pkg.keys.n,"q":q}))
         
+"""
+This class implements requests authorization logic (challanged based authorization)
+"""
 class AuthHandler(tornado.web.RequestHandler):
     def get_current_user(self):
         if not self.request.headers.get('Authorization'):
-            print('No auth header')
+            log_line('Authorization. No auth header')
             self.set_header('WWW-Authenticate', 'CustomAuth')
             return None
         auth = self.request.headers.get('Authorization')
         auth_data = pickle.loads(b64decode(auth))
         login, challange_sig = auth_data[0], auth_data[1]
         
+        log_line("user {} request authorization check".format(login))
+        
         s = getServer()
         # check whether this user is revoked
         if s.db.is_user_revoked(login):
-            print("This user is revoked ({})".format(login))
+            log_line("This user is revoked ({})".format(login))
             self.set_header('WWW-Authenticate', 'CustomAuth')
             return None
         # check if challcange is fresh
         challange, challange_time, pk_base64 = s.db.get_challange_and_PK(login)
         if (time() - challange_time) > s.db.CHALLANGE_LIVE: # our challange is out of date
-            print("User challange is out of date")
+            log_line("User challange is out of date")
             s.db.update_challange(login)
             challange, _, _ = s.db.get_challange_and_PK(login)
             self.set_header('WWW-Authenticate', challange)
@@ -350,12 +389,20 @@ class AuthHandler(tornado.web.RequestHandler):
         pk = pickle.loads(b64decode(pk_base64))
         uid = s.pkg.generateUID(login)
         if verify_1(s.pkg.keys.n, challange.encode('ascii'), challange_sig, uid, pk, s.pkg.getMPK()):
+            log_line("Request {} was authorized for user {}".format(self.request.uri, login))
             return login
         else:
-            print("Invalid challange signature")
+            log_line("Authorization failed. Invalid challange signature")
             self.set_header('WWW-Authenticate', challange)
         return None
-        
+
+"""
+API:
+POST-request. 2 argument:
+    1. signers list - Json-list of logins whose PKs are will be returned.
+    2. timestamp - Timestamp retrieved from signed document. PKs of users that were revoked after this timestamp won't be returned (those users should not have signed this document.
+Returns json-dictionary of PKs {"id" : PK}.
+"""
 class GetPublicKeysHandler(AuthHandler):
     def post(self):
         if self.current_user is None:
@@ -386,8 +433,14 @@ class GetPublicKeysHandler(AuthHandler):
                 return
         s = getServer()
         signers_info_map = s.db.get_pbulic_keys(signers, timestamp)
+        log_line("Returning PKs for ids: {}".format(signers))
         self.write(json.dumps(signers_info_map))
-        
+
+"""
+API:
+POST-request. 1 argument (file):
+    PDF file to be uploaded should be sent as multipart data.
+"""
 class AddDocumentHandler(AuthHandler):
     def post(self):
         if self.current_user is None:
@@ -412,7 +465,7 @@ class AddDocumentHandler(AuthHandler):
         signers = s.db.get_ordered_signers_list(timestamp)
         print("Signers list for new doc: {}".format(signers))
         try:
-            s.db.add_docuemtn(fname, signers)
+            s.db.add_document(fname, signers)
         except mysql.connector.errors.IntegrityError as e:
             self.set_status(400)
             self.write("Dublicate document name")
@@ -424,8 +477,14 @@ class AddDocumentHandler(AuthHandler):
             fp.write(timestamp_ser + self.request.files[fname][0]['body']) # add timestamp to document
         with open(os.path.join("signatures", fname + '.sig'), 'w') as fp:
             json.dump([], fp)
+        log_line("User {} uploaded file {}. Signers list: {}".format(self.current_user, fname, signers))
         self.write('ok')
         
+"""
+API:
+GET-request. No arguments.
+Returns Json-list of documents that are pending for signing by current user (for whom this request was authorized).
+"""
 class SignQueueHandler(AuthHandler):
     def get(self):
         if self.current_user is None:
@@ -434,16 +493,29 @@ class SignQueueHandler(AuthHandler):
             return
         id = self.current_user
         s = getServer()
+        log_line("User {} requested documents list for signing".format(self.current_user))
         self.write(json.dumps(s.db.get_documents_to_sign(id)))
-        
+
+"""
+API:
+GET-request. 1 argument:
+    1. File name is passed via URI string.
+"""
 class FileDownloadHandler(tornado.web.StaticFileHandler, AuthHandler):
     async def get(self, name):
         if self.current_user is None:
             self.set_status(401)
             self.write("Unauthorized")
             return
+        log_line("User {} downloads {}".format(self.current_user, name))
         await super().get(name)
-        
+
+"""
+API:
+GET-request. 1 argument:
+    1. File name is passed via URI string.
+Current aggregated signature is returned only if the user who authorized this request is the current user in signing queue for this document. If he is not then 400 status will be returned.
+"""
 class GetAggSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
     async def get(self, name):
         if self.current_user is None:
@@ -461,8 +533,15 @@ class GetAggSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
             self.set_status(400)
             self.write("Go away... You're not our current signer")
             return
+        log_line("user {} requests current aggregate for {}".format(self.current_user, name))
         await super().get(name + ".sig")   
-        
+
+"""
+API:
+GET-request. 1 argument:
+    1. File name is passed via URI string.
+Returns aggregated signature for signed document (signing proccess for this document should be finished). Any authorized user should use this request to retrive signature for document verification.
+"""
 class GetFinalSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
     async def get(self, name):
         if self.current_user is None:
@@ -474,8 +553,16 @@ class GetFinalSignatureHandler(tornado.web.StaticFileHandler, AuthHandler):
             self.set_status(400)
             self.write("Document doesn't exist or its signature is not fully aggregated yet")
             return
+        log_line("user {} requests aggregated signature for {}".format(self.current_user, name))
         await super().get(name + ".sig")   
-        
+
+"""
+API:
+POST-request. 2 argument:
+    1. File name is passed via URI string.
+    2. New aggregate signature part is passed in json body (key "sig")
+This request can be used only by current signer (from document's signing queue) to add new signature part (aggregate his part of the signature). If the signature is valid (server performs the check) than the signing process will proceed to the next user in the signing queue.
+"""
 class SignHandler(AuthHandler):
     def post(self, name):
         if self.current_user is None:
@@ -501,7 +588,7 @@ class SignHandler(AuthHandler):
         sig = data["sig"]
         sig_agg = json.load(open(os.path.join('signatures', name + '.sig'), 'r'))
         msg = open(os.path.join('files', name), 'rb').read()
-        # todo signers info
+        
         signers_list, cur_index = s.db.get_signers_list(name)
         cur_list = signers_list[:cur_index+1]
         
@@ -517,14 +604,21 @@ class SignHandler(AuthHandler):
             s.pkg.getMPK()
             ):
             self.set_status(400)
+            log_line("User {} provided invalid aggregate for {}".format(self.current_user, name))
             self.write("Invalid signature")
             return
-        print('Signature valid')
+        log_line('User {} provided valid aggregate for {}'.format(self.current_user, name))
         
         json.dump(sig_agg + [sig], open(os.path.join('signatures', name + '.sig'), 'w')) # update aggregated signature
         s.db.increase_current_signer(name) # set next signer (or finish signing)
         self.write('ok')
-        
+
+"""
+API:
+GET-request. 1 argument:
+    1. File name is passed via URI string.
+This request returns the ordered list of document's signers (that was generated during upload based on the users' stock shares). This request should be used by clients in order to verify aggregated signature.
+"""
 class GetDocumentSighersHandler(AuthHandler):
     def get(self, name):
         if self.current_user is None:
@@ -538,8 +632,14 @@ class GetDocumentSighersHandler(AuthHandler):
             self.set_status(404)
             self.write("Document doesn't exist")
             return
+        log_line("User {} requested signers list for document {}".format(self.current_user, name))
         self.write(json.dumps(signers))
-        
+
+"""
+API:
+GET-request. No arguments.
+Returns json-list with names of all signed documents.
+"""
 class GetSignedDocuments(AuthHandler):
     def get(self):
         if self.current_user is None:
@@ -547,6 +647,7 @@ class GetSignedDocuments(AuthHandler):
             self.write("Unauthorized")
             return
         s = getServer()
+        log_line("User {} requested signed documents list".format(self.current_user))
         self.write(json.dumps(s.db.get_signed_documents()))
         
 class Server(object):
@@ -598,6 +699,7 @@ def main():
     s = Server(args.parameter, args.dbhost, args.dbuser, args.dbpass, regen=args.regen, cleardb=args.cleardb)
     app = s.make_app()
     app.listen(args.port)
+    log_line("starting listening on port {}".format(args.port))
     tornado.ioloop.IOLoop.current().start()
 
 if __name__ == "__main__":

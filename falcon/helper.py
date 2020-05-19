@@ -57,8 +57,8 @@ def verify_1(n, m, sig, uid, pk, MPK):
     vev1 = add_zq(add_zq(z1, mul_zq(z2, MPK)), mul_zq(uid, neg(e)))
     vec2 = add_zq(add_zq(z1a, mul_zq(z2a, MPK)), mul_zq(pk, neg(e)))
     e_check = H1(n, vev1, vec2, m)
-    print('e from sig: {}'.format(e))
-    print('e resttored: {}'.format(e_check))
+    #print('e from sig: {}'.format(e))
+    #print('e resttored: {}'.format(e_check))
     return e == e_check
     
 def verify_agg(n, m, agg_sig, signers_info, MPK):
