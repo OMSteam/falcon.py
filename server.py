@@ -473,6 +473,8 @@ class AddDocumentHandler(AuthHandler):
         # serialize timestamp
         timestamp_ser = timestamp.to_bytes(8, byteorder='little')
         # now we can save file to files directory
+        print("DOC LEN")
+        print(self.request.files[fname][0]['body'])
         with open(os.path.join("files", fname), 'wb') as fp:
             fp.write(timestamp_ser + self.request.files[fname][0]['body']) # add timestamp to document
         with open(os.path.join("signatures", fname + '.sig'), 'w') as fp:
@@ -596,6 +598,7 @@ class SignHandler(AuthHandler):
         
         uid_hashes = [s.pkg.generateUID(login) for login in cur_list]
         signers_info = [(uid_hashes[i], public_keys_map[cur_list[i]]) for i in range(len(cur_list))]
+        print(sig_agg + [sig])
         if not verify_agg(
             s.pkg.keys.n,
             msg,

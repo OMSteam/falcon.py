@@ -48,6 +48,7 @@ def H1(n, v1, v2, msg):
     return [e % (k//n) for e in temp] # we'll take each componenet modulo k//n in order to satisfy Manhattan 
     
 def verify_1(n, m, sig, uid, pk, MPK):
+    print("sig: {}".format(sig))
     # parsing sig
     e = sig[0]
     z = sig[1]

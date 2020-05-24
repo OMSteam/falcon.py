@@ -188,6 +188,7 @@ class Client(object):
         msg = self.get_document(name)
         agg_sig = self.get_agg_signature(name)
         cur_sig = self.sign_agg_step(msg, agg_sig)
+        print("cur_sig: {}".format(cur_sig))
         r = requests.post('{}/sign/{}'.format(self.url, name), headers={'Authorization' : self.auth_info}, data=json.dumps({'sig':cur_sig}))
         if r.status_code == 401:
             self.build_auth_info(r.headers['Www-Authenticate'].encode('ascii'))
