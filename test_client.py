@@ -323,7 +323,7 @@ def main():
             sys.exit(1)
         name = ntpath.basename(args.file)
         body = open(args.file, 'rb')
-        client.add_document(name, body)
+        client.add_document(name, body.read())
         
     elif args.command == "sign":
         if args.name is None:
